@@ -40,6 +40,7 @@ import (
 	crwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	workloadsv1alpha1 "sigs.k8s.io/workload-class/api/v1alpha1"
+	webhookv1alpha1 "sigs.k8s.io/workload-class/internal/webhook/v1alpha1"
 )
 
 // The envtest suite runs the DisruptionWebhook behind a real API server, registered the same way as in cmd/main.go,
@@ -104,6 +105,8 @@ var _ = BeforeSuite(func() {
 	mgrCache = mgr.GetCache()
 
 	Expect(SetupDisruptionWebhookWithManager(mgr)).To(Succeed())
+	// config/webhook also registers the WorkloadClassGuardrail webhook, which specs that create guardrails call.
+	Expect(webhookv1alpha1.SetupWorkloadClassGuardrailWebhookWithManager(mgr)).To(Succeed())
 
 	go func() {
 		defer GinkgoRecover()

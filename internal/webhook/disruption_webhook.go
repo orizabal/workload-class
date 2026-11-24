@@ -50,7 +50,8 @@ const DisruptionWebhookPath = "/validate-disruption"
 //
 // +kubebuilder:webhook:path=/validate-disruption,mutating=false,failurePolicy=ignore,sideEffects=None,timeoutSeconds=5,groups="",resources=pods/eviction,verbs=create,versions=v1,name=vpoddisruption.workloads.x-k8s.io,admissionReviewVersions=v1
 
-// The webhook reads the evicted Pod, its Namespace, and the WorkloadClasses in the Namespace from the manager's cache.
+// The webhook reads the evicted Pod, its Namespace, and the WorkloadClasses in the Namespace from the manager's cache,
+// and the WorkloadClassGuardrails that map disruption causes (see identity.go).
 //
 // +kubebuilder:rbac:groups="",resources=pods;namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=workloadclasses,verbs=get;list;watch
@@ -63,11 +64,13 @@ type DisruptionWebhook struct {
 // SetupDisruptionWebhookWithManager registers the DisruptionWebhook with the manager's webhook server.
 func SetupDisruptionWebhookWithManager(mgr ctrl.Manager) error {
 	// Pre-register informers so the cache syncs at manager startup rather than lazily inside the 5s timeout of the
-	// first pods/eviction request (no controller watches Namespaces).
+	// first pods/eviction request (no controller watches Namespaces, and the WorkloadClassGuardrail controller may
+	// not run in the same manager).
 	for _, obj := range []client.Object{
 		&corev1.Pod{},
 		&corev1.Namespace{},
 		&workloadsv1alpha1.WorkloadClass{},
+		&workloadsv1alpha1.WorkloadClassGuardrail{},
 	} {
 		if _, err := mgr.GetCache().GetInformer(context.Background(), obj); err != nil {
 			return err

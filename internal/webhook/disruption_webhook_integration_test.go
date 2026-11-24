@@ -75,13 +75,13 @@ var _ = Describe("DisruptionWebhook", func() {
 	// newWorkloadClass creates a WorkloadClass selecting app=web and sets its status as the controller would.
 	newWorkloadClass := func(
 		name string, validated metav1.ConditionStatus, readiness workloadsv1alpha1.MaintenanceReadiness,
-		maintenanceMessage string, subjects ...workloadsv1alpha1.Subject,
+		maintenanceMessage string, causes ...workloadsv1alpha1.DisruptionCause,
 	) *workloadsv1alpha1.WorkloadClass {
 		wc := &workloadsv1alpha1.WorkloadClass{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: workloadsv1alpha1.WorkloadClassSpec{
 				PodSelector:      &metav1.LabelSelector{MatchLabels: map[string]string{"app": evictionApp}},
-				DisruptionPolicy: workloadsv1alpha1.DisruptionPolicy{AllowedDisruptionsOutsideOfWindow: subjects},
+				DisruptionPolicy: workloadsv1alpha1.DisruptionPolicy{AllowedDisruptionsOutsideOfWindow: causes},
 			},
 		}
 		Expect(k8sClient.Create(ctx, wc)).To(Succeed())
@@ -195,10 +195,34 @@ var _ = Describe("DisruptionWebhook", func() {
 		expectAllowed(k8sClient, pod)
 	})
 
-	It("allows subjects in allowedDisruptionsOutsideOfWindow", func() {
+	It("allows identities a WorkloadClassGuardrail maps to a cause in allowedDisruptionsOutsideOfWindow", func() {
+		guardrail := &workloadsv1alpha1.WorkloadClassGuardrail{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "disruption-causes-"},
+			Spec: workloadsv1alpha1.WorkloadClassGuardrailSpec{
+				Constraints: workloadsv1alpha1.Constraints{
+					Disruption: workloadsv1alpha1.Disruption{MaxNonDisruptionDurationDays: 30},
+				},
+				DisruptionCauses: []workloadsv1alpha1.DisruptionCauseMapping{
+					{
+						Name: workloadsv1alpha1.DisruptionCauseClusterAutoscaler,
+						Subjects: []workloadsv1alpha1.Subject{
+							{Kind: "User", Name: autoscalerUser},
+							{Kind: "ServiceAccount", Name: autoscalerSAName, Namespace: namespace},
+						},
+					},
+					{
+						Name:     workloadsv1alpha1.DisruptionCauseSecurityPatch,
+						Subjects: []workloadsv1alpha1.Subject{{Kind: "User", Name: "security-patcher"}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, guardrail)).To(Succeed())
+		DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, guardrail))).To(Succeed()) })
+		waitForCached(guardrail)
+
 		newWorkloadClass("web", metav1.ConditionTrue, workloadsv1alpha1.ReadinessNotReady, maintenanceDenied,
-			workloadsv1alpha1.Subject{Kind: "User", Name: autoscalerUser},
-			workloadsv1alpha1.Subject{Kind: "ServiceAccount", Name: autoscalerSAName, Namespace: namespace},
+			workloadsv1alpha1.DisruptionCauseClusterAutoscaler,
 		)
 		pod := newPod("web-1", map[string]string{"app": evictionApp})
 
@@ -206,6 +230,8 @@ var _ = Describe("DisruptionWebhook", func() {
 		expectAllowed(impersonating("system:serviceaccount:"+namespace+":"+autoscalerSAName), pod)
 		expectDenied(impersonating("someone-else"), pod, maintenanceDenied)
 		expectDenied(impersonating("system:serviceaccount:other:"+autoscalerSAName), pod, maintenanceDenied)
+		// Mapped to a cause the WorkloadClass doesn't allow.
+		expectDenied(impersonating("security-patcher"), pod, maintenanceDenied)
 	})
 
 	It("applies the Namespace's enforced WorkloadClass to every Pod", func() {
